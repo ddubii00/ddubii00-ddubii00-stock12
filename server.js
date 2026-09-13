@@ -29,6 +29,12 @@ const MIME = {
 
 const SYMBOL_NAMES = {
   "000660.KS": "SK하이닉스",
+  "352820.KS": "하이브",
+  "000080.KS": "하이트진로",
+  "013030.KQ": "하이록코리아",
+  "126700.KQ": "하이비젼시스템",
+  "160190.KQ": "하이젠알앤엠",
+  "365590.KQ": "하이딥",
   "005930.KS": "삼성전자",
   "009150.KS": "삼성전기",
   "018260.KS": "삼성에스디에스",
@@ -138,6 +144,12 @@ const STOOQ_SYMBOLS = {
 
 const SYMBOL_SEARCH = [
   { symbol: "000660.KS", name: "SK하이닉스", aliases: ["하닉", "하이닉스", "sk hynix", "hynix"] },
+  { symbol: "352820.KS", name: "하이브", aliases: ["hybe"] },
+  { symbol: "000080.KS", name: "하이트진로", aliases: ["하이트", "진로", "hitejinro"] },
+  { symbol: "013030.KQ", name: "하이록코리아", aliases: ["하이록", "hy-lok"] },
+  { symbol: "126700.KQ", name: "하이비젼시스템", aliases: ["하이비전", "hyvision"] },
+  { symbol: "160190.KQ", name: "하이젠알앤엠", aliases: ["하이젠", "higen"] },
+  { symbol: "365590.KQ", name: "하이딥", aliases: ["hiddeep"] },
   { symbol: "005930.KS", name: "삼성전자", aliases: ["삼전", "삼성", "samsung"] },
   { symbol: "009150.KS", name: "삼성전기", aliases: ["삼성전기", "전기", "samsung electro-mechanics", "semco"] },
   { symbol: "018260.KS", name: "삼성에스디에스", aliases: ["삼성에스디에스", "삼성sds", "에스디에스", "samsung sds", "sds"] },
@@ -1617,15 +1629,16 @@ async function searchUsSymbols(query) {
   }
 }
 
-async function searchSymbols(query) {
+async function searchSymbols(query, quick = false) {
   const staticMatches = staticSearch(query);
-  const [koreanMatches, koreanMasterMatches, naverWebMatches, usMatches] = await Promise.all([
+  if (quick) return staticMatches;
+  const masterMatches = koreanMasterCache.items.length ? await searchKoreanMasterSymbols(query) : [];
+  const [koreanMatches, naverWebMatches, usMatches] = await Promise.all([
     searchKoreanSymbols(query),
-    searchKoreanMasterSymbols(query),
     searchNaverWebSymbols(query),
     searchUsSymbols(query)
   ]);
-  return mergeSearchResults(staticMatches, koreanMatches, koreanMasterMatches, naverWebMatches, usMatches);
+  return mergeSearchResults(staticMatches, koreanMatches, masterMatches, naverWebMatches, usMatches);
 }
 
 function fallbackCandles(symbol, limit = 140, intervalSeconds = 60) {
@@ -2100,7 +2113,7 @@ export async function handleRequest(req, res) {
 
   if (pathname === "/api/search") {
     const q = (url.searchParams.get("q") || "").trim();
-    const matches = await searchSymbols(q);
+    const matches = await searchSymbols(q, url.searchParams.get("quick") === "1");
     await sendJson(res, { ok: true, results: matches });
     return;
   }

@@ -240,7 +240,7 @@ function showCrosshair(state, event) {
   const nearest = state.drawnLines.reduce((best, line) => !best || Math.abs(line.x - x) < Math.abs(best.x - x) ? line : best, null); if (!nearest) return;
   state.crosshair = { x, y: pointerY, time: nearest.time }; drawChart(state);
 }
-async function fetchJson(path) { const response = await fetch(`${apiBase}${path}`, { cache: "no-store" }); if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.json(); }
+async function fetchJson(path, options = {}) { const response = await fetch(`${apiBase}${path}`, { cache: "no-store", ...options }); if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.json(); }
 function providerLabel(source = "") {
   if (/^kis/i.test(source)) return "KIS";
   if (/naver/i.test(source)) return "네이버";
@@ -283,10 +283,12 @@ function evaluateSignals(state) {
   state.previousMacdSign = sign;
 }
 async function refreshChart(state, showLoading = false) {
-  if (state.loading) return; state.loading = true; if (showLoading) state.loadingEl.classList.add("visible");
-  try { const calculationLimit = isIntraday(state.interval) ? Math.min(3500, state.limit * 5) : state.limit; const params = new URLSearchParams({ symbol: state.item.symbol, name: state.item.name, interval: state.interval, limit: String(calculationLimit), mode: sessionMode }); const payload = await fetchJson(`/chart?${params}`); const rows = (payload.series || []).filter((row) => Number.isFinite(Number(row.close))); if (!rows.length) throw new Error("empty series"); state.rows = rows; state.calculationLimit = calculationLimit; state.macdValues = macd(rows); state.crosshair = null; updateChartGeometry(state); drawChart(state); updateQuote(state, payload); evaluateSignals(state); state.card.classList.remove("error"); }
-  catch (error) { state.card.classList.add("error"); state.card.querySelector(".market-status").textContent = "데이터 재시도 중"; console.warn("Chart refresh failed", error); }
-  finally { state.loading = false; state.loadingEl.classList.remove("visible"); }
+  if (state.loading && !showLoading) return;
+  if (showLoading) state.chartController?.abort();
+  const controller = new AbortController(); const requestId = (state.chartRequestId || 0) + 1; state.chartRequestId = requestId; state.chartController = controller; state.loading = true; if (showLoading) state.loadingEl.classList.add("visible");
+  try { const calculationLimit = isIntraday(state.interval) ? Math.min(3500, state.limit * 5) : state.limit; const params = new URLSearchParams({ symbol: state.item.symbol, name: state.item.name, interval: state.interval, limit: String(calculationLimit), mode: sessionMode }); const payload = await fetchJson(`/chart?${params}`, { signal: controller.signal }); if (requestId !== state.chartRequestId) return; const rows = (payload.series || []).filter((row) => Number.isFinite(Number(row.close))); if (!rows.length) throw new Error("empty series"); state.rows = rows; state.calculationLimit = calculationLimit; state.macdValues = macd(rows); state.crosshair = null; updateChartGeometry(state); drawChart(state); updateQuote(state, payload); evaluateSignals(state); state.card.classList.remove("error"); }
+  catch (error) { if (error.name === "AbortError") return; state.card.classList.add("error"); state.card.querySelector(".market-status").textContent = "데이터 재시도 중"; console.warn("Chart refresh failed", error); }
+  finally { if (requestId === state.chartRequestId) { state.loading = false; state.loadingEl.classList.remove("visible"); } }
 }
 function applyLiveQuote(state, payload) {
   if (!isIntraday(state.interval) || !state.rows.length) return;
@@ -298,8 +300,8 @@ function applyLiveQuote(state, payload) {
   state.rows = rows.slice(-(state.calculationLimit || state.limit)); state.macdValues = macd(state.rows); updateChartGeometry(state); drawChart(state); evaluateSignals(state);
 }
 async function refreshLiveQuote(state) {
-  if (state.loading) return;
-  try { const payload = await fetchJson(`/quote?symbol=${encodeURIComponent(state.item.symbol)}&mode=${sessionMode}`); updateQuote(state, payload); applyLiveQuote(state, payload); }
+  const symbol = state.item.symbol;
+  try { const payload = await fetchJson(`/quote?symbol=${encodeURIComponent(symbol)}&mode=${sessionMode}`); if (state.item.symbol !== symbol) return; updateQuote(state, payload); applyLiveQuote(state, payload); }
   catch { /* the full chart refresh remains the fallback */ }
 }
 function renderTimeframes(state) {
@@ -313,19 +315,44 @@ function renderChartTypes(state) {
     return button;
   }));
 }
+function setActiveSuggestion(state, index) {
+  const buttons = [...state.card.querySelectorAll(".suggestions button")]; if (!buttons.length) return;
+  state.activeSuggestion = (index + buttons.length) % buttons.length;
+  buttons.forEach((button, buttonIndex) => { const active = buttonIndex === state.activeSuggestion; button.classList.toggle("active", active); button.setAttribute("aria-selected", String(active)); });
+  buttons[state.activeSuggestion].scrollIntoView({ block: "nearest" }); state.card.querySelector(".symbol-input").setAttribute("aria-activedescendant", buttons[state.activeSuggestion].id);
+}
+function selectSymbol(state, item) {
+  state.searchController?.abort(); state.searchRequestId = (state.searchRequestId || 0) + 1; state.activeSuggestion = -1; state.item = { symbol: item.symbol, name: item.name }; state.viewOffset = 0; state.previousMacdSign = null; state.pendingTwoLineAlert = null; state.rows = []; state.lines = []; state.drawnLines = [];
+  const input = state.card.querySelector(".symbol-input"); input.value = item.name; input.removeAttribute("aria-activedescendant"); input.setAttribute("aria-expanded", "false"); state.card.querySelector(".suggestions").replaceChildren(); state.card.querySelector(".last-price").textContent = "--"; state.card.querySelector(".last-change").textContent = "--"; const ctx = state.canvas.getContext("2d"); ctx.clearRect(0, 0, state.canvas.width, state.canvas.height); saveCharts();
+  refreshLiveQuote(state); refreshChart(state, true);
+}
+function renderSuggestions(state, items) {
+  const box = state.card.querySelector(".suggestions"); const activeSymbol = state.activeSuggestion >= 0 ? state.searchResults[state.activeSuggestion]?.symbol : null; state.searchResults = items.slice(0, 8); state.activeSuggestion = activeSymbol ? state.searchResults.findIndex((item) => item.symbol === activeSymbol) : -1;
+  box.replaceChildren(...state.searchResults.map((item, index) => { const button = document.createElement("button"); button.type = "button"; button.id = `symbol-option-${state.index}-${index}`; button.setAttribute("role", "option"); button.setAttribute("aria-selected", "false"); button.innerHTML = `<b>${item.name}</b><small>${item.symbol}</small>`; button.addEventListener("mouseenter", () => setActiveSuggestion(state, index)); button.addEventListener("mousedown", (event) => { event.preventDefault(); selectSymbol(state, item); }); return button; }));
+  state.card.querySelector(".symbol-input").setAttribute("aria-expanded", String(state.searchResults.length > 0)); if (state.activeSuggestion >= 0) setActiveSuggestion(state, state.activeSuggestion);
+}
 async function suggestSymbols(state, query) {
-  const box = state.card.querySelector(".suggestions"); if (query.trim().length < 1) { box.replaceChildren(); return; }
-  try { const payload = await fetchJson(`/search?q=${encodeURIComponent(query)}`); box.replaceChildren(...(payload.results || []).slice(0, 8).map((item) => { const button = document.createElement("button"); button.type = "button"; button.innerHTML = `<b>${item.name}</b><small>${item.symbol}</small>`; button.addEventListener("mousedown", (event) => { event.preventDefault(); state.item = { symbol: item.symbol, name: item.name }; state.card.querySelector(".symbol-input").value = item.name; box.replaceChildren(); saveCharts(); refreshChart(state, true); }); return button; })); } catch { box.replaceChildren(); }
+  const trimmed = query.trim(); const box = state.card.querySelector(".suggestions"); state.searchController?.abort(); const requestId = (state.searchRequestId || 0) + 1; state.searchRequestId = requestId;
+  if (!trimmed) { state.searchResults = []; state.activeSuggestion = -1; box.replaceChildren(); state.card.querySelector(".symbol-input").setAttribute("aria-expanded", "false"); return; }
+  state.searchResults = []; state.activeSuggestion = -1; box.replaceChildren();
+  const controller = new AbortController(); state.searchController = controller;
+  try {
+    const quick = await fetchJson(`/search?q=${encodeURIComponent(trimmed)}&quick=1`, { signal: controller.signal }); if (requestId !== state.searchRequestId) return; renderSuggestions(state, quick.results || []);
+    const full = await fetchJson(`/search?q=${encodeURIComponent(trimmed)}`, { signal: controller.signal }); if (requestId !== state.searchRequestId) return; renderSuggestions(state, full.results || []);
+  } catch (error) { if (error.name !== "AbortError" && requestId === state.searchRequestId && !state.searchResults?.length) box.replaceChildren(); }
 }
 function createCard(item, index) {
   const card = template.content.firstElementChild.cloneNode(true); chartGrid.append(card);
-  const state = { item, card, canvas: card.querySelector("canvas"), loadingEl: card.querySelector(".loading"), alert: card.querySelector(".signal-alert"), interval: "1d", limit: 120, chartType: "three-line", rows: [], lines: [], threeLines: [], pnfColumns: [], macdValues: [], drawnLines: [], viewOffset: 0, maxViewOffset: 0, crosshair: null, chartGeometry: null, previousMacdSign: null, pendingTwoLineAlert: null };
+  const state = { index, item, card, canvas: card.querySelector("canvas"), loadingEl: card.querySelector(".loading"), alert: card.querySelector(".signal-alert"), interval: "1d", limit: 120, chartType: "three-line", rows: [], lines: [], threeLines: [], pnfColumns: [], macdValues: [], drawnLines: [], viewOffset: 0, maxViewOffset: 0, crosshair: null, chartGeometry: null, previousMacdSign: null, pendingTwoLineAlert: null, searchResults: [], activeSuggestion: -1 };
   card.querySelector(".symbol-input").value = item.name;
   state.canvas.addEventListener("pointermove", (event) => { if (state.dragStartX != null) { const delta = state.dragStartX - event.clientX; const step = Math.max(4, state.canvas.clientWidth / 100); state.viewOffset = Math.min(state.maxViewOffset, Math.max(0, state.dragOriginOffset + Math.round(delta / step))); state.crosshair = null; drawChart(state); return; } showCrosshair(state, event); });
   state.canvas.addEventListener("pointerdown", (event) => { state.dragStartX = event.clientX; state.dragOriginOffset = state.viewOffset; state.crosshair = null; state.canvas.setPointerCapture(event.pointerId); drawChart(state); });
   state.canvas.addEventListener("pointerup", (event) => { state.dragStartX = null; state.canvas.releasePointerCapture?.(event.pointerId); });
   state.canvas.addEventListener("pointercancel", () => { state.dragStartX = null; }); state.canvas.addEventListener("pointerleave", () => { if (state.dragStartX == null) { state.crosshair = null; drawChart(state); } });
-  const input = card.querySelector(".symbol-input"); let searchTimer; input.addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => suggestSymbols(state, input.value), 180); }); input.addEventListener("focus", () => suggestSymbols(state, input.value)); input.addEventListener("blur", () => setTimeout(() => card.querySelector(".suggestions").replaceChildren(), 150));
+  const input = card.querySelector(".symbol-input"); input.setAttribute("role", "combobox"); input.setAttribute("aria-autocomplete", "list"); input.setAttribute("aria-expanded", "false"); input.setAttribute("aria-controls", `symbol-list-${index}`); card.querySelector(".suggestions").id = `symbol-list-${index}`;
+  input.addEventListener("input", () => suggestSymbols(state, input.value)); input.addEventListener("focus", () => suggestSymbols(state, input.value));
+  input.addEventListener("keydown", (event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setActiveSuggestion(state, state.activeSuggestion + (event.key === "ArrowDown" ? 1 : -1)); } else if (event.key === "Enter" && state.searchResults.length) { event.preventDefault(); selectSymbol(state, state.searchResults[state.activeSuggestion >= 0 ? state.activeSuggestion : 0]); } else if (event.key === "Escape") { state.searchController?.abort(); state.searchResults = []; state.activeSuggestion = -1; input.setAttribute("aria-expanded", "false"); card.querySelector(".suggestions").replaceChildren(); } });
+  input.addEventListener("blur", () => setTimeout(() => { state.searchResults = []; state.activeSuggestion = -1; input.setAttribute("aria-expanded", "false"); card.querySelector(".suggestions").replaceChildren(); }, 120));
   const period = card.querySelector(".period-input"); period.addEventListener("change", () => { state.limit = Math.min(700, Math.max(20, Number(period.value) || defaultLimit(state.interval))); period.value = state.limit; state.previousMacdSign = null; state.pendingTwoLineAlert = null; refreshChart(state, true); }); state.alert.querySelector("button").addEventListener("click", () => state.alert.classList.remove("visible")); chartState.set(index, state); renderTimeframes(state); renderChartTypes(state); refreshChart(state, true); return state;
 }
 async function refreshMarket() {
