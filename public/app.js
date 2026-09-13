@@ -26,7 +26,6 @@ function formatNumber(value, decimals = 2) {
 function isKorean(symbol) { return symbol.endsWith(".KS") || symbol.endsWith(".KQ"); }
 function isIntraday(interval) { return !["1d", "1wk", "1mo"].includes(interval); }
 function decimalsFor(symbol) { return isKorean(symbol) ? 0 : 2; }
-function tickerFor(symbol) { return String(symbol || "").replace(/\.(KS|KQ|US)$/i, ""); }
 function defaultLimit(interval) { return DEFAULT_LIMIT_BY_INTERVAL[interval] || 120; }
 function timeText(time, interval) {
   const date = new Date(time * 1000);
@@ -193,7 +192,7 @@ function drawChart(state) {
   if (!canvas || !rows?.length) return;
   const { width, height, ratio } = resizeCanvas(canvas); const ctx = canvas.getContext("2d");
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0); ctx.clearRect(0, 0, width, height);
-  const pad = { top: 94, right: 70, bottom: 30, left: 12 }; const chartW = Math.max(1, width - pad.left - pad.right); const chartH = Math.max(1, height - pad.top - pad.bottom);
+  const pad = { top: 68, right: 70, bottom: 30, left: 12 }; const chartW = Math.max(1, width - pad.left - pad.right); const chartH = Math.max(1, height - pad.top - pad.bottom);
   let renkoRangeLines = lines;
   if (state.chartType === "renko") { const visibleCount = 130; const maxOffset = Math.max(0, lines.length - visibleCount); state.viewOffset = Math.min(maxOffset, Math.max(0, state.viewOffset || 0)); const end = lines.length - state.viewOffset; renkoRangeLines = lines.slice(Math.max(0, end - visibleCount), end); }
   const plotValues = state.chartType === "pnf" ? pnfColumns.flatMap((column) => column.levels) : (state.chartType === "renko" ? renkoRangeLines : lines).flatMap((line) => [line.open, line.close]);
@@ -316,12 +315,12 @@ function renderChartTypes(state) {
 }
 async function suggestSymbols(state, query) {
   const box = state.card.querySelector(".suggestions"); if (query.trim().length < 1) { box.replaceChildren(); return; }
-  try { const payload = await fetchJson(`/search?q=${encodeURIComponent(query)}`); box.replaceChildren(...(payload.results || []).slice(0, 8).map((item) => { const button = document.createElement("button"); button.type = "button"; button.innerHTML = `<b>${item.name}</b><small>${item.symbol}</small>`; button.addEventListener("mousedown", (event) => { event.preventDefault(); state.item = { symbol: item.symbol, name: item.name }; state.card.querySelector(".symbol-input").value = item.name; state.card.querySelector(".symbol-code").textContent = `티커 ${tickerFor(item.symbol)}`; box.replaceChildren(); saveCharts(); refreshChart(state, true); }); return button; })); } catch { box.replaceChildren(); }
+  try { const payload = await fetchJson(`/search?q=${encodeURIComponent(query)}`); box.replaceChildren(...(payload.results || []).slice(0, 8).map((item) => { const button = document.createElement("button"); button.type = "button"; button.innerHTML = `<b>${item.name}</b><small>${item.symbol}</small>`; button.addEventListener("mousedown", (event) => { event.preventDefault(); state.item = { symbol: item.symbol, name: item.name }; state.card.querySelector(".symbol-input").value = item.name; box.replaceChildren(); saveCharts(); refreshChart(state, true); }); return button; })); } catch { box.replaceChildren(); }
 }
 function createCard(item, index) {
   const card = template.content.firstElementChild.cloneNode(true); chartGrid.append(card);
   const state = { item, card, canvas: card.querySelector("canvas"), loadingEl: card.querySelector(".loading"), alert: card.querySelector(".signal-alert"), interval: "1d", limit: 120, chartType: "three-line", rows: [], lines: [], threeLines: [], pnfColumns: [], macdValues: [], drawnLines: [], viewOffset: 0, maxViewOffset: 0, crosshair: null, chartGeometry: null, previousMacdSign: null, pendingTwoLineAlert: null };
-  card.querySelector(".symbol-input").value = item.name; card.querySelector(".symbol-code").textContent = `티커 ${tickerFor(item.symbol)}`;
+  card.querySelector(".symbol-input").value = item.name;
   state.canvas.addEventListener("pointermove", (event) => { if (state.dragStartX != null) { const delta = state.dragStartX - event.clientX; const step = Math.max(4, state.canvas.clientWidth / 100); state.viewOffset = Math.min(state.maxViewOffset, Math.max(0, state.dragOriginOffset + Math.round(delta / step))); state.crosshair = null; drawChart(state); return; } showCrosshair(state, event); });
   state.canvas.addEventListener("pointerdown", (event) => { state.dragStartX = event.clientX; state.dragOriginOffset = state.viewOffset; state.crosshair = null; state.canvas.setPointerCapture(event.pointerId); drawChart(state); });
   state.canvas.addEventListener("pointerup", (event) => { state.dragStartX = null; state.canvas.releasePointerCapture?.(event.pointerId); });
